@@ -625,29 +625,56 @@ impl ChatWidget {
         if self.workflow.saved_permissions.is_some() {
             return;
         }
-        let Some(active) = self.config.permissions.active_permission_profile() else {
-            return;
-        };
-        let label = builtin_approval_presets()
-            .into_iter()
-            .find(|preset| {
-                preset.active_permission_profile.id == active.id || preset.id == active.id
+        // Capture the raw approval policy and canonical permission profile, not
+        // just the named preset. Sessions launched with
+        // `--dangerously-bypass-approvals-and-sandbox` (YOLO) have no named
+        // active profile, so without the raw state there would be nothing to
+        // restore and `/code` would be stuck in the forced read-only mode.
+        let approval_policy =
+            AskForApproval::from(self.config.permissions.approval_policy.value());
+        let permission_profile = self.config.permissions.permission_profile().clone();
+        let active = self.config.permissions.active_permission_profile();
+        let label = active
+            .as_ref()
+            .and_then(|active| {
+                builtin_approval_presets()
+                    .into_iter()
+                    .find(|preset| {
+                        preset.active_permission_profile.id == active.id || preset.id == active.id
+                    })
+                    .map(|preset| preset.label.to_string())
             })
-            .map(|preset| preset.label.to_string())
-            .unwrap_or_else(|| active.id.clone());
+            .or_else(|| {
+                preset_matching(&approval_policy, &permission_profile)
+                    .map(|preset| preset.label.to_string())
+            })
+            .unwrap_or_else(|| "Current permissions".to_string());
         self.workflow.saved_permissions = Some(SavedPermissions {
-            profile_id: active.id.clone(),
+            profile_id: active.map(|active| active.id.clone()),
             display_label: label,
+            approval_policy,
+            permission_profile,
         });
     }
 
     /// Restore the exact permissions captured before planning. Never elevates:
     /// if no snapshot or matching preset exists, permissions are left unchanged.
     pub(crate) fn restore_saved_permissions(&mut self) -> bool {
-        if let Some(saved) = self.workflow.saved_permissions.clone()
-            && self.apply_permission_preset_id(&saved.profile_id)
-        {
-            return true;
+        if let Some(saved) = self.workflow.saved_permissions.clone() {
+            // Prefer restoring the named profile identity when one was captured.
+            if let Some(profile_id) = saved.profile_id.as_deref()
+                && self.apply_permission_preset_id(profile_id)
+            {
+                return true;
+            }
+            // Unnamed sessions (e.g. YOLO) have no profile id. Match the raw
+            // approval policy and permission profile against the built-in
+            // presets so the exact prior state is restored.
+            if let Some(preset) = preset_matching(&saved.approval_policy, &saved.permission_profile)
+                && self.apply_permission_preset_id(preset.id)
+            {
+                return true;
+            }
         }
         // No snapshot (e.g. `/code` without `/plan`): keep the current preset.
         let current = self.config.permissions.active_permission_profile();
@@ -798,6 +825,18 @@ impl ChatWidget {
     }
 }
 
+/// Find the built-in preset whose approval policy and permission profile match a
+/// captured raw permission state. Used to restore sessions that have no named
+/// active permission profile (for example YOLO / danger-full-access).
+fn preset_matching(
+    approval: &AskForApproval,
+    profile: &PermissionProfile,
+) -> Option<ApprovalPreset> {
+    builtin_approval_presets().into_iter().find(|preset| {
+        AskForApproval::from(preset.approval) == *approval && preset.permission_profile == *profile
+    })
+}
+
 fn reasoning_rank(level: &str) -> i32 {
     match level {
         "none" => 0,
@@ -810,5 +849,59 @@ fn reasoning_rank(level: &str) -> i32 {
         "ultra" => 7,
         "persistent" => 8,
         _ => -1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_protocol::models::PermissionProfile;
+    use codex_protocol::protocol::AskForApproval as ProtocolAskForApproval;
+
+    fn approval(policy: ProtocolAskForApproval) -> AskForApproval {
+        AskForApproval::from(policy)
+    }
+
+    #[test]
+    fn preset_matching_recognises_unrestricted_sessions() {
+        // YOLO (`--dangerously-bypass-approvals-and-sandbox`) has no named
+        // profile: only the raw approval + disabled profile identify it.
+        let preset = preset_matching(&approval(ProtocolAskForApproval::Never), &PermissionProfile::Disabled)
+            .expect("unrestricted state must match a built-in preset");
+        assert_eq!(preset.id, "full-access");
+    }
+
+    #[test]
+    fn preset_matching_recognises_named_states() {
+        assert_eq!(
+            preset_matching(
+                &approval(ProtocolAskForApproval::OnRequest),
+                &PermissionProfile::workspace_write(),
+            )
+            .map(|preset| preset.id),
+            Some("auto"),
+        );
+        assert_eq!(
+            preset_matching(
+                &approval(ProtocolAskForApproval::OnRequest),
+                &PermissionProfile::read_only(),
+            )
+            .map(|preset| preset.id),
+            Some("read-only"),
+        );
+    }
+
+    #[test]
+    fn preset_matching_rejects_mismatched_state() {
+        // Approval and profile must both match; a read-only profile paired with
+        // a never-ask policy is not a built-in preset and must not silently
+        // resolve to a different one.
+        assert!(
+            preset_matching(
+                &approval(ProtocolAskForApproval::Never),
+                &PermissionProfile::read_only(),
+            )
+            .is_none()
+        );
     }
 }

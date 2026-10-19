@@ -14,6 +14,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use codex_app_server_protocol::AskForApproval;
+use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use serde::Deserialize;
 use serde::Serialize;
@@ -337,10 +339,20 @@ pub(crate) fn classify(cfg: &WorkflowsConfig, text: &str) -> RoutingDecision {
 
 /// Permission snapshot captured before a workflow downgrades to read-only, so
 /// `/code` can restore the user's own prior (never-elevated) choice.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// The raw approval policy and canonical permission profile are recorded in
+/// addition to the named profile id (when the session had one). Unrestricted
+/// sessions such as `--dangerously-bypass-approvals-and-sandbox` have no named
+/// profile, so the raw state is what allows `/code` to restore them exactly.
+#[derive(Debug, Clone)]
 pub(crate) struct SavedPermissions {
-    pub profile_id: String,
+    /// Named active permission profile id, when the session had one.
+    pub profile_id: Option<String>,
     pub display_label: String,
+    /// Raw approval policy captured from the session config.
+    pub approval_policy: AskForApproval,
+    /// Canonical permission profile captured from the session config.
+    pub permission_profile: PermissionProfile,
 }
 
 /// In-session workflow state carried on `ChatWidget`.
