@@ -193,7 +193,7 @@ fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
                 let padding = &value[..value.len() - value.trim_start().len()];
                 format!("{prefix}Directory:{padding}[[workspace]]")
             } else {
-                line
+                line.replace(crate::version::CODEX_CLI_VERSION, "0.0.0")
             }
         })
         .collect()
