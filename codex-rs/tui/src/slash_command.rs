@@ -47,6 +47,7 @@ pub enum SlashCommand {
     Cfo,
     Auto,
     Max,
+    Effort,
     ModelStatus,
     Voice,
     Goal,
@@ -150,6 +151,7 @@ impl SlashCommand {
             SlashCommand::Cfo => "CFO mode: financial analysis, budgets and reports (DeepSeek High)",
             SlashCommand::Auto => "enable automatic model selection for subsequent tasks",
             SlashCommand::Max => "raise the current model to its highest reasoning effort",
+            SlashCommand::Effort => "show or change the current model's reasoning effort",
             SlashCommand::ModelStatus => {
                 "show workflow, active model, reasoning, plan and cost"
             }
@@ -197,6 +199,7 @@ impl SlashCommand {
                 | SlashCommand::Debug
                 | SlashCommand::Cto
                 | SlashCommand::Cfo
+                | SlashCommand::Effort
                 | SlashCommand::Goal
                 | SlashCommand::Voice
                 | SlashCommand::Ide
@@ -287,6 +290,7 @@ impl SlashCommand {
             | SlashCommand::Cfo
             | SlashCommand::Auto
             | SlashCommand::Max
+            | SlashCommand::Effort
             | SlashCommand::Cd
             | SlashCommand::Clear
             | SlashCommand::Logout
@@ -407,6 +411,13 @@ mod tests {
         assert_eq!(SlashCommand::Cfo.command(), "cfo");
         assert_eq!(SlashCommand::Auto.command(), "auto");
         assert_eq!(SlashCommand::Max.command(), "max");
+        assert_eq!(SlashCommand::Effort.command(), "effort");
+        assert_eq!(
+            SlashCommand::from_str("effort"),
+            Ok(SlashCommand::Effort)
+        );
+        assert!(SlashCommand::Effort.supports_inline_args());
+        assert!(!SlashCommand::Effort.available_during_task());
         assert_eq!(SlashCommand::ModelStatus.command(), "model-status");
         assert_eq!(
             SlashCommand::from_str("model-status"),

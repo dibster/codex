@@ -308,6 +308,132 @@ impl ChatWidget {
         );
     }
 
+    /// `/effort`: show or change the active model's reasoning effort.
+    ///
+    /// With no argument it reports the current effort and the levels the active
+    /// model advertises. `up`/`down` step through those advertised levels; any
+    /// other argument is validated against them and rejected when unsupported,
+    /// never silently substituted.
+    pub(super) fn apply_effort_command(&mut self, arg: &str) {
+        let model_id = self.current_model().to_string();
+        let choices = self.supported_efforts(&model_id);
+        let supported = choices
+            .iter()
+            .map(|effort| effort.as_str().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let current = self.effective_reasoning_effort();
+
+        let requested = arg.trim();
+        if requested.is_empty() {
+            let current_label = current.as_ref().map_or_else(
+                || "default".to_string(),
+                |effort| effort.as_str().to_string(),
+            );
+            self.add_info_message(
+                format!(
+                    "Reasoning effort: {current_label}\nModel: {model_id}\nSupported: {supported}\nUsage: /effort <level> | up | down"
+                ),
+                /*hint*/ None,
+            );
+            return;
+        }
+
+        let normalized = requested.to_ascii_lowercase();
+        let anchor = current
+            .clone()
+            .filter(|effort| choices.contains(effort))
+            .or_else(|| {
+                self.catalog_default_effort(&model_id)
+                    .filter(|effort| choices.contains(effort))
+            })
+            .or_else(|| choices.first().cloned());
+
+        let target = match normalized.as_str() {
+            "up" | "raise" | "+" => step_effort(&choices, anchor.as_ref(), /*raise*/ true),
+            "down" | "lower" | "-" => step_effort(&choices, anchor.as_ref(), /*raise*/ false),
+            _ => match choices
+                .iter()
+                .find(|effort| effort.as_str().eq_ignore_ascii_case(&normalized))
+            {
+                Some(effort) => Some(effort.clone()),
+                None => {
+                    self.add_error_message(format!(
+                        "Model {model_id} does not support reasoning '{requested}'. Supported: {supported}."
+                    ));
+                    return;
+                }
+            },
+        };
+
+        let Some(effort) = target else {
+            self.add_info_message(
+                format!("Reasoning is already at the boundary of what {model_id} supports ({supported})."),
+                /*hint*/ None,
+            );
+            return;
+        };
+
+        self.apply_reasoning_only(effort.clone());
+        self.add_info_message(
+            format!(
+                "Reasoning effort set to {} for {model_id}.",
+                effort.as_str()
+            ),
+            /*hint*/ None,
+        );
+    }
+
+    /// Advertised reasoning levels for a model, ordered lowest to highest.
+    fn supported_efforts(&self, model_id: &str) -> Vec<ReasoningEffortConfig> {
+        let mut efforts = self.configured_supported_efforts(model_id);
+        if efforts.is_empty() {
+            efforts = self.catalog_supported_efforts(model_id);
+        }
+        efforts.sort_by_key(|effort| reasoning_rank(effort.as_str()));
+        efforts.dedup();
+        efforts
+    }
+
+    /// Reasoning levels declared for a model in `workflows.toml`.
+    fn configured_supported_efforts(&self, model_id: &str) -> Vec<ReasoningEffortConfig> {
+        let Ok(Some(cfg)) = self.load_workflow_config() else {
+            return Vec::new();
+        };
+        let Some((_symbolic, model)) = workflow_models::symbolic_for_model_id(&cfg, model_id)
+        else {
+            return Vec::new();
+        };
+        model
+            .supported_reasoning
+            .iter()
+            .filter_map(|level| workflow_models::effort_for(model, level).ok())
+            .collect()
+    }
+
+    /// Reasoning levels advertised by the model catalog.
+    fn catalog_supported_efforts(&self, model_id: &str) -> Vec<ReasoningEffortConfig> {
+        let models = self.model_catalog.try_list_models().unwrap_or_default();
+        models
+            .into_iter()
+            .find(|preset| preset.model == model_id)
+            .map(|preset| {
+                preset
+                    .supported_reasoning_efforts
+                    .iter()
+                    .map(|option| option.effort.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Default reasoning level advertised by the model catalog, when known.
+    fn catalog_default_effort(&self, model_id: &str) -> Option<ReasoningEffortConfig> {
+        let models = self.model_catalog.try_list_models().ok()?;
+        let preset = models.into_iter().find(|preset| preset.model == model_id)?;
+        Some(preset.default_reasoning_effort.clone())
+    }
+
     /// `/auto`: enable classifier-based model selection for subsequent tasks.
     pub(super) fn enable_auto_routing(&mut self) {
         self.workflow.auto_enabled = true;
@@ -835,6 +961,21 @@ fn preset_matching(
     builtin_approval_presets().into_iter().find(|preset| {
         AskForApproval::from(preset.approval) == *approval && preset.permission_profile == *profile
     })
+}
+
+/// Next advertised reasoning level in the requested direction.
+fn step_effort(
+    choices: &[ReasoningEffortConfig],
+    current: Option<&ReasoningEffortConfig>,
+    raise: bool,
+) -> Option<ReasoningEffortConfig> {
+    let current = current?;
+    let index = choices.iter().position(|choice| choice == current)?;
+    if raise {
+        choices.get(index + 1).cloned()
+    } else {
+        index.checked_sub(1).and_then(|index| choices.get(index)).cloned()
+    }
 }
 
 fn reasoning_rank(level: &str) -> i32 {

@@ -394,6 +394,7 @@ impl ChatWidget {
             SlashCommand::Cfo => self.enter_workflow(WorkflowJob::Cfo, /*user_message*/ None),
             SlashCommand::Auto => self.enable_auto_routing(),
             SlashCommand::Max => self.apply_max_reasoning(),
+            SlashCommand::Effort => self.apply_effort_command(""),
             SlashCommand::ModelStatus => self.add_workflow_status_output(),
             SlashCommand::Goal => {
                 if !self.config.features.enabled(Feature::Goals) {
@@ -1184,6 +1185,7 @@ impl ChatWidget {
             SlashCommand::Pets if !trimmed.is_empty() => {
                 self.select_pet_by_id(args);
             }
+            SlashCommand::Effort => self.apply_effort_command(trimmed),
             _ => self.dispatch_command_from_source(cmd, source),
         }
         if source == SlashCommandDispatchSource::Live && cmd != SlashCommand::Goal {
@@ -1366,6 +1368,7 @@ impl ChatWidget {
             | SlashCommand::Voice
             | SlashCommand::Recap
             | SlashCommand::ModelStatus
+            | SlashCommand::Effort
             | SlashCommand::TestApproval => QueueDrain::Continue,
             SlashCommand::Cd => match self.thread_id {
                 Some(thread_id) if self.can_change_working_directory(thread_id) => QueueDrain::Stop,
