@@ -24,6 +24,9 @@ slash commands. Same session, same conversation — no restart, no manual model 
 
 ```
 /max           → raise current model to its max reasoning (keeps the model)
+/effort        → show current effort + supported levels for the active model
+/effort high   → set an exact supported level (invalid levels are rejected, never substituted)
+/effort up|down→ step the effort up/down one level (Shift+Up / Shift+Down do the same)
 /auto          → let Codex pick per task by risk (on/off)
 /model-status  → workflow, model, provider, reasoning, plan + approval, tokens & est. cost
 ```

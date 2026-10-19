@@ -16,6 +16,7 @@ All changes live under `codex-rs/tui/`; the agent execution loop is untouched.
 | `/cto [task]` | `deepseek/deepseek-v4.1-flash` | `high` | read-only | Technical research, docs, architecture |
 | `/cfo [task]` | `deepseek/deepseek-v4.1-flash` | `high` | read-only | Financial research, spreadsheets, budgets |
 | `/max` | current model | highest supported | unchanged | Raise reasoning on the active model |
+| `/effort [level\|up\|down]` | current model | shown/changed | unchanged | Show or change the active model's reasoning effort |
 | `/auto` | classifier | per risk | unchanged | Enable automatic model selection |
 | `/model-status` | - | - | - | Show workflow, model, provider, reasoning, plan, tokens, cost |
 
@@ -30,6 +31,8 @@ Examples:
 /cto Compare our queue architecture with an event-log design
 /cfo Reconcile the Q3 forecast against actuals
 /max
+/effort high
+/effort up
 /auto
 /model-status
 ```
@@ -40,6 +43,10 @@ submits the task in one step.
 ## Reasoning effort mapping
 
 * Codex's canonical ladder is `none < minimal < low < medium < high < xhigh < max < ultra`.
+* `/effort` (no argument) prints the active model, current effort and that model's supported
+  levels; `/effort <level>` sets an exact supported level and hard-errors on anything else;
+  `/effort up` / `/effort down` step one level. `Shift+Up` / `Shift+Down` (or `Alt+.` / `Alt+,`)
+  do the same without the composer.
 * `max` is a first-class variant in this fork and is emitted verbatim to OpenRouter.
 * Workflow reasoning levels are validated against each model's `supported_reasoning` list from
   `workflows.toml`. An unsupported level is a hard error surfaced in the transcript - the code
