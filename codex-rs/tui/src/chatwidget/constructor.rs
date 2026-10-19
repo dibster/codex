@@ -121,6 +121,7 @@ impl ChatWidget {
             skills_initial_state: None,
             current_collaboration_mode,
             active_collaboration_mask,
+            workflow: Default::default(),
             has_chatgpt_account,
             requires_openai_auth,
             has_codex_backend_auth,

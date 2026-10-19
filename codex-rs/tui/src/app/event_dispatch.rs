@@ -433,6 +433,12 @@ impl App {
                     self.chat_widget.restore_user_message_to_composer(text.into());
                     return Ok(AppRunControl::Continue);
                 }
+                // "Yes, clear context and implement" is an explicit plan approval.
+                self.chat_widget.approve_active_plan();
+                // Starting a fresh thread after an approved plan: restore the
+                // permissions captured before read-only planning so the new
+                // session can actually implement the plan.
+                self.chat_widget.restore_saved_permissions();
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
@@ -3101,6 +3107,8 @@ impl App {
                 text,
                 collaboration_mode,
             } => {
+                // "Yes, implement this plan" is an explicit plan approval.
+                self.chat_widget.approve_active_plan();
                 self.chat_widget
                     .submit_user_message_with_mode(text, collaboration_mode);
             }

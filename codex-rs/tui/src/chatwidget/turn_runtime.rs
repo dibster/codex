@@ -251,7 +251,12 @@ impl ChatWidget {
     }
 
     pub(super) fn open_plan_implementation_prompt(&mut self) {
-        let default_mask = collaboration_modes::default_mode_mask(self.model_catalog.as_ref());
+        let mut default_mask = collaboration_modes::default_mode_mask(self.model_catalog.as_ref());
+        // Selecting "Yes, implement this plan" applies the planner's routing
+        // decision (model + reasoning) to the implementation turn.
+        if let Some(mask) = default_mask.as_mut() {
+            self.apply_routing_to_mask(mask);
+        }
         let context_usage_label = self.plan_implementation_context_usage_label();
 
         self.bottom_pane
@@ -373,6 +378,7 @@ impl ChatWidget {
         self.input_queue.submit_pending_steers_after_interrupt = false;
         self.finalize_turn();
         self.add_to_history(history_cell::new_error_event(message));
+        self.note_failed_attempt();
         self.set_ambient_pet_notification(
             crate::pets::PetNotificationKind::Failed,
             /*body*/ None,

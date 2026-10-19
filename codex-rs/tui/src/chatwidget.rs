@@ -308,6 +308,7 @@ mod interaction;
 pub(crate) use interaction::KeyEventAction;
 mod skills;
 mod slash_dispatch;
+mod workflow;
 mod worktree_picker;
 use self::skills::collect_tool_mentions;
 use self::skills::find_app_mentions;
@@ -531,6 +532,8 @@ pub(crate) struct ChatWidget {
     current_collaboration_mode: CollaborationMode,
     /// The currently active collaboration mask, if any.
     active_collaboration_mask: Option<CollaborationModeMask>,
+    /// Multi-model workflow state (active workflow, plan, routing, escalation).
+    workflow: crate::workflow_models::WorkflowState,
     has_chatgpt_account: bool,
     pub(crate) requires_openai_auth: bool,
     has_codex_backend_auth: bool,

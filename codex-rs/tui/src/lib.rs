@@ -257,6 +257,7 @@ mod width;
 mod windows_sandbox;
 mod workspace_command;
 mod workspace_messages;
+mod workflow_models;
 
 mod wrapping;
 

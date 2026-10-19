@@ -726,8 +726,18 @@ impl ChatWidget {
         self.update_collaboration_mode_indicator();
         self.refresh_model_dependent_surfaces();
         let next_mode = self.active_mode_kind();
-        let next_model = self.current_model();
+        let next_model = self.current_model().to_string();
         let next_effort = self.effective_reasoning_effort();
+        // Entering Plan mode is read-only: capture the pre-plan permissions so any
+        // later exit (mode picker, native plan-implementation prompt, or /code) can
+        // restore exactly those permissions. Leaving Plan mode never elevates.
+        if previous_mode != next_mode {
+            if next_mode == ModeKind::Plan {
+                self.snapshot_permissions_if_absent();
+            } else if previous_mode == ModeKind::Plan {
+                let _ = self.restore_saved_permissions();
+            }
+        }
         if previous_mode != next_mode
             && (previous_model != next_model || previous_effort != next_effort)
         {

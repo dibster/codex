@@ -40,6 +40,14 @@ pub enum SlashCommand {
     Compact,
     Recap,
     Plan,
+    Code,
+    Complex,
+    Debug,
+    Cto,
+    Cfo,
+    Auto,
+    Max,
+    ModelStatus,
     Voice,
     Goal,
     Agents,
@@ -135,6 +143,16 @@ impl SlashCommand {
                 "include current selection, open files, and other context from your IDE"
             }
             SlashCommand::Plan => "switch to Plan mode",
+            SlashCommand::Code => "implement the approved plan with the selected model",
+            SlashCommand::Complex => "switch to GLM-5.3 High for complex implementation",
+            SlashCommand::Debug => "switch to GLM-5.3 Max for root-cause debugging",
+            SlashCommand::Cto => "CTO mode: technical research and architecture (DeepSeek High)",
+            SlashCommand::Cfo => "CFO mode: financial analysis, budgets and reports (DeepSeek High)",
+            SlashCommand::Auto => "enable automatic model selection for subsequent tasks",
+            SlashCommand::Max => "raise the current model to its highest reasoning effort",
+            SlashCommand::ModelStatus => {
+                "show workflow, active model, reasoning, plan and cost"
+            }
             SlashCommand::Voice => "start or stop voice; use /voice settings to choose a voice",
             SlashCommand::Goal => "set or view the goal for a long-running task",
             SlashCommand::Agents => "open the agent command center",
@@ -174,6 +192,11 @@ impl SlashCommand {
                 | SlashCommand::Clear
                 | SlashCommand::Fork
                 | SlashCommand::Plan
+                | SlashCommand::Code
+                | SlashCommand::Complex
+                | SlashCommand::Debug
+                | SlashCommand::Cto
+                | SlashCommand::Cfo
                 | SlashCommand::Goal
                 | SlashCommand::Voice
                 | SlashCommand::Ide
@@ -257,6 +280,13 @@ impl SlashCommand {
             | SlashCommand::Import
             | SlashCommand::Review
             | SlashCommand::Plan
+            | SlashCommand::Code
+            | SlashCommand::Complex
+            | SlashCommand::Debug
+            | SlashCommand::Cto
+            | SlashCommand::Cfo
+            | SlashCommand::Auto
+            | SlashCommand::Max
             | SlashCommand::Cd
             | SlashCommand::Clear
             | SlashCommand::Logout
@@ -266,6 +296,7 @@ impl SlashCommand {
             | SlashCommand::Archive
             | SlashCommand::Resume
             | SlashCommand::Model
+            | SlashCommand::ModelStatus
             | SlashCommand::Daybreak
             | SlashCommand::Permissions
             | SlashCommand::Copy
@@ -365,5 +396,23 @@ mod tests {
             SlashCommand::from_str("approve"),
             Ok(SlashCommand::AutoReview)
         );
+    }
+
+    #[test]
+    fn workflow_commands_use_expected_names() {
+        assert_eq!(SlashCommand::Code.command(), "code");
+        assert_eq!(SlashCommand::Complex.command(), "complex");
+        assert_eq!(SlashCommand::Debug.command(), "debug");
+        assert_eq!(SlashCommand::Cto.command(), "cto");
+        assert_eq!(SlashCommand::Cfo.command(), "cfo");
+        assert_eq!(SlashCommand::Auto.command(), "auto");
+        assert_eq!(SlashCommand::Max.command(), "max");
+        assert_eq!(SlashCommand::ModelStatus.command(), "model-status");
+        assert_eq!(
+            SlashCommand::from_str("model-status"),
+            Ok(SlashCommand::ModelStatus)
+        );
+        assert!(SlashCommand::ModelStatus.available_during_task());
+        assert!(!SlashCommand::Code.available_during_task());
     }
 }

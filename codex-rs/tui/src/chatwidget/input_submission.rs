@@ -135,6 +135,10 @@ impl ChatWidget {
         source: UserMessageSource,
         prepared_images: Option<Vec<UserInput>>,
     ) -> (bool, Option<AppCommand>) {
+        if source == UserMessageSource::Prompt {
+            let text = user_message.text.clone();
+            self.maybe_auto_route(&text);
+        }
         self.bottom_pane.dismiss_composer_sparkle();
         if self.has_misalignment_policy_violation() {
             return (false, None);

@@ -6,6 +6,7 @@
 //! slash-command recall follows the same submitted-input rule as ordinary text.
 
 use super::*;
+use super::workflow::WorkflowJob;
 use crate::app::WindowsSandboxHost;
 use crate::app_event::ManagedWorktreeMode;
 use crate::app_event::ThreadGoalSetMode;
@@ -365,6 +366,7 @@ impl ChatWidget {
                     self.bottom_pane.drain_pending_submission_state();
                 }
                 self.open_review_popup();
+                self.enter_review_workflow();
                 if self.mcp_startup_status.is_some() {
                     self.defer_input_until_settings_applied();
                 }
@@ -379,8 +381,20 @@ impl ChatWidget {
                 self.defer_input_until_settings_applied();
             }
             SlashCommand::Plan => {
-                self.apply_plan_slash_command();
+                if self.apply_plan_slash_command() {
+                    self.begin_plan_workflow();
+                }
             }
+            SlashCommand::Code => self.enter_workflow(WorkflowJob::Code, /*user_message*/ None),
+            SlashCommand::Complex => {
+                self.enter_workflow(WorkflowJob::Complex, /*user_message*/ None);
+            }
+            SlashCommand::Debug => self.enter_workflow(WorkflowJob::Debug, /*user_message*/ None),
+            SlashCommand::Cto => self.enter_workflow(WorkflowJob::Cto, /*user_message*/ None),
+            SlashCommand::Cfo => self.enter_workflow(WorkflowJob::Cfo, /*user_message*/ None),
+            SlashCommand::Auto => self.enable_auto_routing(),
+            SlashCommand::Max => self.apply_max_reasoning(),
+            SlashCommand::ModelStatus => self.add_workflow_status_output(),
             SlashCommand::Goal => {
                 if !self.config.features.enabled(Feature::Goals) {
                     return;
@@ -919,6 +933,14 @@ impl ChatWidget {
             }
             SlashCommand::Plan if !trimmed.is_empty() => {
                 let plan_available = self.apply_plan_slash_command();
+                if plan_available {
+                    // Entering plan collaboration mode alone does not select the
+                    // planning model: also engage the read-only planning workflow
+                    // so the turn runs on DeepSeek at max reasoning. This is
+                    // best-effort: with no `workflows.toml` the native plan-mode
+                    // behaviour is preserved (no model override).
+                    self.begin_plan_workflow();
+                }
                 let mut user_message = self.prepared_inline_user_message(
                     args,
                     text_elements,
@@ -1087,9 +1109,65 @@ impl ChatWidget {
                 self.request_side_conversation(parent_thread_id, Some(user_message));
             }
             SlashCommand::Review if !trimmed.is_empty() => {
+                self.enter_review_workflow();
                 self.submit_op(AppCommand::review(ReviewTarget::Custom {
                     instructions: args,
                 }));
+            }
+            SlashCommand::Code if !trimmed.is_empty() => {
+                let user_message = self.prepared_inline_user_message(
+                    args,
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    source,
+                );
+                self.enter_workflow(WorkflowJob::Code, Some(user_message));
+            }
+            SlashCommand::Complex if !trimmed.is_empty() => {
+                let user_message = self.prepared_inline_user_message(
+                    args,
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    source,
+                );
+                self.enter_workflow(WorkflowJob::Complex, Some(user_message));
+            }
+            SlashCommand::Debug if !trimmed.is_empty() => {
+                let user_message = self.prepared_inline_user_message(
+                    args,
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    source,
+                );
+                self.enter_workflow(WorkflowJob::Debug, Some(user_message));
+            }
+            SlashCommand::Cto if !trimmed.is_empty() => {
+                let user_message = self.prepared_inline_user_message(
+                    args,
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    source,
+                );
+                self.enter_workflow(WorkflowJob::Cto, Some(user_message));
+            }
+            SlashCommand::Cfo if !trimmed.is_empty() => {
+                let user_message = self.prepared_inline_user_message(
+                    args,
+                    text_elements,
+                    local_images,
+                    remote_image_urls,
+                    mention_bindings,
+                    source,
+                );
+                self.enter_workflow(WorkflowJob::Cfo, Some(user_message));
             }
             SlashCommand::Resume if !trimmed.is_empty() => {
                 self.app_event_tx
@@ -1287,6 +1365,7 @@ impl ChatWidget {
             | SlashCommand::Rename
             | SlashCommand::Voice
             | SlashCommand::Recap
+            | SlashCommand::ModelStatus
             | SlashCommand::TestApproval => QueueDrain::Continue,
             SlashCommand::Cd => match self.thread_id {
                 Some(thread_id) if self.can_change_working_directory(thread_id) => QueueDrain::Stop,
@@ -1313,6 +1392,13 @@ impl ChatWidget {
             | SlashCommand::Review
             | SlashCommand::Model
             | SlashCommand::Plan
+            | SlashCommand::Code
+            | SlashCommand::Complex
+            | SlashCommand::Debug
+            | SlashCommand::Cto
+            | SlashCommand::Cfo
+            | SlashCommand::Auto
+            | SlashCommand::Max
             | SlashCommand::Goal
             | SlashCommand::Side
             | SlashCommand::Btw

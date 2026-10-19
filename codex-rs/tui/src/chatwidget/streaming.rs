@@ -261,6 +261,9 @@ impl ChatWidget {
             self.transcript
                 .record_agent_markdown(plan_text.clone(), source);
             self.transcript.latest_proposed_plan_markdown = Some(plan_text.clone());
+            if self.active_mode_kind() == ModeKind::Plan {
+                self.record_completed_plan(&plan_text);
+            }
         }
         // Plan commit ticks can hide the status row; remember whether we streamed plan output so
         // completion can restore it once stream queues are idle.
