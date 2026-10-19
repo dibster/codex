@@ -253,6 +253,7 @@ and scroll to it; tmux/alternate-screen capture cannot see it.
 | Model catalog | `~/.codex/models.workflow.json` |
 | Global instructions | `~/.codex/AGENTS.md` |
 | Docs | this file (reference) and `QUICKSTART.md` (day-to-day) in the fork root |
+| Config snapshot | `config-snapshot/` in the fork root - redacted copies of the four `~/.codex` files above, so the setup can be rebuilt from the repo alone |
 
 Shell alias: `co` runs `codex --no-daemon --dangerously-bypass-approvals-and-sandbox` (no
 daemon, approvals and sandbox bypassed). Plain `codex` uses the configured

@@ -1,0 +1,123 @@
+# Central multi-model workflow configuration for the Codex CLI.
+# Read at runtime by the patched TUI (slash commands /plan, /code, /complex,
+# /debug, /review, /cto, /cfo, /max, /auto, /model-status, /effort, /routing).
+# Editing this file changes model assignments without recompiling Codex.
+
+[providers.openrouter]
+# Shared transport for both workflow models (matches [model_providers.openrouter]
+# in config.toml). Both models speak the OpenRouter Responses-compatible API.
+base_url = "https://openrouter.ai/api/v1"
+wire_api = "responses"
+
+# OpenRouter routing variants: variant name -> model-id suffix. The active
+# variant is appended to each model's base `id` below. Switch in-session with
+# `/routing <name>` (it also writes [defaults].routing back here).
+#   plain = cheapest, load-balanced by price (tool calls auto-use Exacto)
+#   nitro = fastest upstream (can be several times more expensive)
+#   floor = always pick the absolute cheapest endpoint
+[routing_variants]
+plain = ""
+nitro = ":nitro"
+floor = ":floor"
+
+# Symbolic model names -> real OpenRouter model identifiers (base ids, without
+# a routing suffix). Prices are USD per token (input, output) from the OpenRouter
+# model list; used only for the local /model-status cost estimate.
+[models.deepseek]
+id = "deepseek/deepseek-v4.1-flash"
+provider = "openrouter"
+# Plain-route list price (USD/token), verified 2026-10-19 from OpenRouter.
+input_price_per_token = 0.0000000344
+output_price_per_token = 0.00000008
+supported_reasoning = ["none", "low", "high", "max"]
+
+# Fast-route (:nitro) price override (USD/token); served by the fastest host.
+[models.deepseek.variant_prices.nitro]
+input = 0.0000003
+output = 0.0000012
+
+[models.glm]
+id = "z-ai/glm-5.3"
+provider = "openrouter"
+# Plain-route list price (USD/token), verified 2026-10-19 from OpenRouter.
+input_price_per_token = 0.000000079
+output_price_per_token = 0.0000014
+supported_reasoning = ["low", "high", "max"]
+
+# Fast-route (:nitro) price override (USD/token).
+[models.glm.variant_prices.nitro]
+input = 0.0000014
+output = 0.0000044
+
+# Global defaults applied when a workflow omits a value.
+# `reasoning` is the fallback for every workflow that does not set `reasoning`.
+# `routing` is the default OpenRouter routing variant (see [routing_variants]).
+[defaults]
+reasoning = "high"
+routing = "nitro"
+
+[workflows.plan]
+model = "deepseek"
+reasoning = "max"
+mode = "read-only"
+description = "Investigate and produce an implementation plan (no code edits)"
+
+[workflows.code]
+model = "deepseek"
+reasoning = "high"
+mode = "coding"
+description = "Implement the approved plan with the planner-selected model"
+
+[workflows.complex]
+model = "glm"
+reasoning = "high"
+mode = "coding"
+description = "Manual override for complex implementation work"
+
+[workflows.debug]
+model = "glm"
+reasoning = "max"
+mode = "coding"
+description = "Root-cause debugging for hard failures"
+
+[workflows.review]
+model = "glm"
+reasoning = "high"
+mode = "read-only"
+description = "Review changes against requirements and acceptance criteria"
+
+[workflows.cto]
+model = "deepseek"
+reasoning = "high"
+mode = "read-only"
+description = "Technical research, document analysis, architecture"
+
+[workflows.cfo]
+model = "deepseek"
+reasoning = "high"
+mode = "read-only"
+description = "Financial research, spreadsheets, budgets, reports"
+
+# Autoselection: planner/classifier routing for /code.  The planner emits a
+# routing JSON block; /auto applies deterministic risk heuristics instead.
+[workflows.auto]
+model = "deepseek"
+reasoning = "low"
+mode = "coding"
+description = "Automatic model selection based on task risk"
+
+[routing]
+# Deterministic risk signals for /auto (substring, case-insensitive).
+max_signals = ["usb", "bluetooth", "rfid", "barcode", "scanner", "android",
+               "lifecycle", "race condition", "deadlock", "concurrency",
+               "intermittent", "flaky", "device-dependent", "hardware"]
+max_model = "glm"
+max_reasoning = "low"
+
+high_signals = ["architecture", "migration", "cross-service", "state management",
+                "unfamiliar api", "integration", "refactor", "performance"]
+high_model = "glm"
+high_reasoning = "low"
+
+default_model = "deepseek"
+default_reasoning = "low"
