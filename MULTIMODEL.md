@@ -17,6 +17,7 @@ All changes live under `codex-rs/tui/`; the agent execution loop is untouched.
 | `/cfo [task]` | `deepseek/deepseek-v4.1-flash` | `high` | read-only | Financial research, spreadsheets, budgets |
 | `/max` | current model | highest supported | unchanged | Raise reasoning on the active model |
 | `/effort [level\|up\|down]` | current model | shown/changed | unchanged | Show or change the active model's reasoning effort |
+| `/routing [variant]` | current model | unchanged | unchanged | Show or change the OpenRouter routing variant (`plain`/`nitro`/`floor`) for the active model |
 | `/auto` | classifier | per risk | unchanged | Enable automatic model selection |
 | `/model-status` | - | - | - | Show workflow, model, provider, reasoning, plan, tokens, cost |
 
@@ -33,6 +34,8 @@ Examples:
 /max
 /effort high
 /effort up
+/routing
+/routing plain
 /auto
 /model-status
 ```
@@ -55,6 +58,30 @@ submits the task in one step.
   accepted level. If a workflow is configured with an unsupported level, `effort_for()` returns
   an error such as `model z-ai/glm-5.3 does not support reasoning 'xhigh'`.
 
+## OpenRouter routing variants
+
+`workflows.toml` declares `[routing_variants]`, a table mapping a variant name to a model-id
+suffix. The active variant (default from `[defaults].routing`, shipped as `nitro`) is appended
+to each configured model's **base** id at request time:
+
+| Variant | Suffix | Trade-off |
+|---|---|---|
+| `plain` | *(empty)* | Default OpenRouter endpoint - cheapest, price-load-balanced |
+| `nitro` | `:nitro` | Fastest upstream host(s) - can be several times more expensive |
+| `floor` | `:floor` | Always the absolute cheapest endpoint |
+
+`/routing` with no argument prints the active variant, the current model and the available
+names; `/routing <name>` (case-insensitive) re-points the live model id at the next turn
+boundary (same session, same effort), and persists the choice to `[defaults].routing` in
+`workflows.toml` so it survives a restart. An unknown name is a hard error listing the valid
+names - the variant is never silently substituted. `/model-status` shows the active variant.
+
+Because base ids are stored without a suffix, `symbolic_for_model_id()` resolves suffixed ids
+back to their symbolic model, and cost estimation is variant-aware via
+`[models.<name>.variant_prices.<variant>]` (falling back to the model's base
+`input_price_per_token`/`output_price_per_token`). The shipped config carries a `nitro`
+override for both models, so `/model-status` cost stays accurate on the fast route.
+
 ## Provider transport
 
 Both models use OpenRouter: `https://openrouter.ai/api/v1` with the Responses-compatible wire
@@ -64,6 +91,38 @@ auth are shared, switching models inside a session is just a model-id change.
 Custom model catalog entries must use `tool_mode = "direct"` (not `code_mode_only`) or the
 shell tool breaks.
 
+## Session affinity and provider routing
+
+Two extra provider-body options are wired through `ModelProviderInfo` so OpenRouter routing is
+config-driven, not hard-coded. Both are emitted as top-level fields on every
+`/api/v1/responses` request by `build_responses_request`:
+
+* `send_session_id = true` (in `[model_providers.openrouter]`) sends the Codex session id as the
+  OpenRouter `session_id` body field. OpenRouter treats it as a **sticky-routing key**, so a
+  conversation keeps hitting the same upstream provider between turns - which keeps that host's
+  prompt cache warm. Cache hits surface as `usage.input_tokens_details.cached_tokens`. The flag
+  is off by default because strict providers reject unknown body fields.
+* `[model_providers.openrouter.extra_body]` is an arbitrary table merged verbatim into the
+  request body. It is used for OpenRouter's `provider` routing preferences, e.g.:
+
+  ```toml
+  [model_providers.openrouter.extra_body.provider]
+  allow_fallbacks = true
+  order = ["DeepInfra/turbo"]
+  # only = ["DeepInfra"]
+  # ignore = ["Together"]
+  # sort = "throughput"   # or "price" / "latency"
+  ```
+
+  These preferences are orthogonal to the `:nitro`/`:floor` **routing variants** above: the
+  variant picks the OpenRouter sort strategy via the model-id suffix, while `provider` pins or
+  excludes specific upstreams. Tool calls always use OpenRouter's Exacto routing.
+
+Both options are exposed read-only in `/model-status` (`Provider routing: session_id on/off;
+extra_body {...}`). Changing either is a `config.toml` edit plus a restart - unlike the routing
+variant, they are provider-transport settings rather than per-turn workflow state, and must not
+change mid-session because that would invalidate the warm upstream connection and cache.
+
 ## Configuration
 
 Two files, both global (`$CODEX_HOME`, default `~/.codex`):
@@ -71,9 +130,10 @@ Two files, both global (`$CODEX_HOME`, default `~/.codex`):
 * `~/.codex/config.toml` - provider transport + auth (unchanged existing keys plus the
   OpenRouter provider block and model entries).
 * `~/.codex/workflows.toml` - **the** central mapping: symbolic model names -> real provider
-  IDs, per-model prices and supported reasoning levels, each workflow's model/reasoning/mode,
-  the `/auto` risk signals, and the global `[defaults]`. Edit this to change assignments;
-  no recompile needed.
+  base IDs, per-model prices (base + per-variant) and supported reasoning levels, each
+  workflow's model/reasoning/mode, the `/auto` risk signals, the `[routing_variants]` table,
+  and the global `[defaults]` (including the default `routing` variant). Edit this to change
+  assignments; no recompile needed.
 
 Every reasoning level is configurable, with a documented fallback chain:
 
@@ -181,15 +241,42 @@ and scroll to it; tmux/alternate-screen capture cannot see it.
   directory name keeps the original `-musl` suffix so the AppArmor wildcard still matches.
 * `codex-code-mode-host` is not rebuilt (unchanged upstream).
 
+## Where everything lives
+
+| What | Path |
+|---|---|
+| Fork (source) | `~/github/codex-multimodel`, branch `multimodel-workflow`, remote `fork` = `github.com:dibster/codex` (`origin` = upstream `openai/codex`) |
+| Installed binary | `~/.codex/packages/standalone/current/bin/codex`, symlinked from `~/.local/bin/codex` (so `codex` on `PATH`) |
+| Pre-patch backups | same dir: `codex.orig-0.162.0` (pristine upstream), `codex.prefix-*` (one per install step) |
+| Provider transport + auth | `~/.codex/config.toml` |
+| Workflow/model mapping | `~/.codex/workflows.toml` |
+| Model catalog | `~/.codex/models.workflow.json` |
+| Global instructions | `~/.codex/AGENTS.md` |
+| Docs | this file (reference) and `QUICKSTART.md` (day-to-day) in the fork root |
+
+Shell alias: `co` runs `codex --no-daemon --dangerously-bypass-approvals-and-sandbox` (no
+daemon, approvals and sandbox bypassed). Plain `codex` uses the configured
+`sandbox_mode`/`approval_policy`. Native OpenAI models remain available with
+`codex --profile openai`.
+
+Build environment on this box: `libcap-dev` is absent, so the sandbox (bwrap) build script
+fails. Always build/test with:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+export CODEX_SKIP_BWRAP_BUILD=1
+```
+
 ## Rebuild, install, rollback
 
 Rebuild:
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
+export CODEX_SKIP_BWRAP_BUILD=1
 cd ~/github/codex-multimodel/codex-rs
 cargo build --release -p codex-cli
-cargo test -p codex-tui --lib
+RUST_MIN_STACK=16777216 cargo test -p codex-tui --lib workflow
 ```
 
 Install (atomic, preserving the original):
@@ -201,20 +288,44 @@ strip "$BIN/codex.new"
 mv "$BIN/codex.new" "$BIN/codex"
 ```
 
-Rollback (restore the untouched upstream binary):
+Rollback, one step (undo the last install):
+
+```bash
+BIN=~/.codex/packages/standalone/current/bin
+ls "$BIN"/codex.prefix-*          # pick the one from before the change you want to undo
+mv "$BIN/codex.prefix-sessionid-pre" "$BIN/codex"
+```
+
+Rollback, full (restore the untouched upstream binary - loses all workflow features):
 
 ```bash
 BIN=~/.codex/packages/standalone/current/bin
 mv "$BIN/codex.orig-0.162.0" "$BIN/codex"
 ```
 
+Config rollback is just editing `~/.codex/config.toml` and `~/.codex/workflows.toml`; both
+are read at session start, so no rebuild or reinstall is involved.
+
 ## Rebasing on upstream
 
-* Fork base: `openai/codex`, branch `rust-v0.162.0`.
-* All changes are confined to `codex-rs/tui/` (plus `Cargo.lock`). No changes to the agent
-  execution loop, provider crates, or app-server protocol.
-* New files: `codex-rs/tui/src/workflow_models.rs`, `codex-rs/tui/src/chatwidget/workflow.rs`.
-* Modified: `slash_command.rs`, `slash_dispatch.rs`, `chatwidget.rs`, `constructor.rs`,
-  `input_submission.rs`, `session_flow.rs`, `settings.rs`, `streaming.rs`, `turn_runtime.rs`,
+* Fork base: `openai/codex` at `rust-v0.162.0`.
+* Feature level - **TUI only** (workflow commands, model/reasoning switching, plan state):
+  new files `codex-rs/tui/src/workflow_models.rs` and
+  `codex-rs/tui/src/chatwidget/workflow.rs`; modified `slash_command.rs`,
+  `slash_dispatch.rs`, `chatwidget.rs`, `constructor.rs`, `input_submission.rs`,
+  `session_flow.rs`, `settings.rs`, `streaming.rs`, `turn_runtime.rs`,
   `app/event_dispatch.rs`, `lib.rs`.
-* `cargo build` and `cargo test` are unchanged; the upstream build/test process still applies.
+* Transport level - **two additive provider-body options** (for OpenRouter session affinity
+  and provider routing): `codex-rs/model-provider-info/src/lib.rs` (`send_session_id`,
+  `extra_body` fields), `codex-rs/codex-api/src/common.rs` (`session_id` + flattened
+  `extra_body` on the Responses request and its WebSocket mirror),
+  `codex-rs/core/src/client.rs` (`build_responses_request` sets them;
+  `responses_request_properties_match` treats a change as a connection reopen), and
+  `codex-rs/config/src/thread_config/remote.rs` (ignores the two local-only fields, like
+  `gateway_oauth`/`capabilities`). `Cargo.lock` picks up one dependency edge.
+* The remaining touched files are mechanical: adding the two new fields (`false`/`None`) to
+  existing `ModelProviderInfo` and `ResponsesApiRequest` struct literals in tests and support
+  code. No behaviour change.
+* No changes to the agent execution loop, the app-server protocol, auth, or MCP.
+* `cargo build` and `cargo test` are unchanged; the upstream build/test process still
+  applies (plus `CODEX_SKIP_BWRAP_BUILD=1` on this box).

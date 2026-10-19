@@ -122,7 +122,7 @@ impl ChatWidget {
                     return;
                 };
                 (
-                    model.id.clone(),
+                    self.routed_id(&cfg, &model.id),
                     effort,
                     wf.description.clone(),
                 )
@@ -224,6 +224,7 @@ impl ChatWidget {
             return false;
         };
 
+        let plan_model_id = self.routed_id(&cfg, &model.id);
         self.workflow.workflow = Some("plan".to_string());
         self.workflow.routing = None;
         self.workflow.plan_markdown = None;
@@ -236,14 +237,14 @@ impl ChatWidget {
         if !self.apply_permission_preset_id("read-only") {
             return false;
         }
-        if let Err(err) = self.apply_plan_model_selection(&model.id, effort) {
+        if let Err(err) = self.apply_plan_model_selection(&plan_model_id, effort) {
             self.add_error_message(err);
             return false;
         }
         self.add_info_message(
             format!(
                 "Planning with {} ({} reasoning, read-only). The planner selects the coding model for /code.",
-                model.id, cfg.effort_level(&wf)
+                plan_model_id, cfg.effort_level(&wf)
             ),
             /*hint*/ None,
         );
@@ -274,7 +275,8 @@ impl ChatWidget {
         if !self.apply_permission_preset_id("read-only") {
             return;
         }
-        let _ = self.apply_model_selection(&model.id, effort);
+        let model_id = self.routed_id(&cfg, &model.id);
+        let _ = self.apply_model_selection(&model_id, effort);
     }
 
     /// `/max`: raise the current model to its highest supported reasoning.
@@ -384,6 +386,126 @@ impl ChatWidget {
         );
     }
 
+    /// Effective model id for a configured model, applying the session's
+    /// routing variant override (or the `workflows.toml` default).
+    fn routed_id(&self, cfg: &workflow_models::WorkflowsConfig, id: &str) -> String {
+        cfg.with_variant(id, self.workflow.routing_variant.as_deref())
+    }
+
+    /// `/routing`: show or change the active OpenRouter routing variant.
+    ///
+    /// Variants are declared in `[routing_variants]` in `workflows.toml`; the
+    /// chosen variant is appended to each workflow model's base id so the same
+    /// models can switch between cheap/fast routing without a restart. With no
+    /// argument it reports the active variant and the available names; any
+    /// other argument is validated against the declared names and rejected,
+    /// never silently substituted, when unknown.
+    pub(super) fn apply_routing_command(&mut self, arg: &str) {
+        let cfg = match self.load_workflow_config() {
+            Ok(Some(cfg)) => cfg,
+            Ok(None) => {
+                self.add_error_message(self.workflows_missing_message());
+                return;
+            }
+            Err(err) => {
+                self.add_error_message(err);
+                return;
+            }
+        };
+        let names = cfg
+            .routing_variant_names()
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+        if names.is_empty() {
+            self.add_error_message(format!(
+                "No [routing_variants] are declared in {}.",
+                workflow_models::WORKFLOWS_FILE_NAME
+            ));
+            return;
+        }
+        let available = names.join(", ");
+
+        let model_id = self.current_model().to_string();
+        let Some((symbolic, _)) = workflow_models::symbolic_for_model_id(&cfg, &model_id) else {
+            self.add_error_message(format!(
+                "Routing variants apply to configured workflow models only; {model_id} is not in {}.",
+                workflow_models::WORKFLOWS_FILE_NAME
+            ));
+            return;
+        };
+        let symbolic = symbolic.to_string();
+
+        let requested = arg.trim();
+        if requested.is_empty() {
+            let active = cfg
+                .variant_of(&model_id)
+                .unwrap_or_else(|| cfg.default_routing_name())
+                .to_string();
+            self.add_info_message(
+                format!(
+                    "Routing variant: {active}
+Model: {model_id}
+Available: {available}
+Usage: /routing <variant>"
+                ),
+                /*hint*/ None,
+            );
+            return;
+        }
+
+        let Some(canonical) = names
+            .iter()
+            .find(|name| name.eq_ignore_ascii_case(requested))
+            .cloned()
+        else {
+            self.add_error_message(format!(
+                "Unknown routing variant '{requested}'. Available: {available}."
+            ));
+            return;
+        };
+
+        let new_id = cfg.with_variant(&model_id, Some(&canonical));
+        let choices = self.supported_efforts(&new_id);
+        let effort = self
+            .effective_reasoning_effort()
+            .filter(|effort| choices.contains(effort))
+            .or_else(|| {
+                self.catalog_default_effort(&new_id)
+                    .filter(|effort| choices.contains(effort))
+            })
+            .or_else(|| choices.first().cloned());
+        let Some(effort) = effort else {
+            self.add_error_message(format!(
+                "No supported reasoning level is known for {new_id}."
+            ));
+            return;
+        };
+
+        self.workflow.routing_variant = Some(canonical.clone());
+        if let Err(err) = self.apply_model_selection(&new_id, effort) {
+            self.add_error_message(err);
+            return;
+        }
+        self.persist_plan();
+        // Persist the choice so it survives restarts and new sessions. A write
+        // failure is reported but does not undo the in-session switch.
+        let persisted = match workflow_models::save_default_routing(
+            &self.config.codex_home,
+            &canonical,
+        ) {
+            Ok(()) => format!(
+                "Default saved to {}.",
+                workflow_models::WORKFLOWS_FILE_NAME
+            ),
+            Err(err) => format!("(Session-only: could not persist default: {err})"),
+        };
+        self.add_info_message(
+            format!("Routing variant set to '{canonical}' ({symbolic}): {new_id}. {persisted}"),
+            /*hint*/ None,
+        );
+    }
+
     /// Advertised reasoning levels for a model, ordered lowest to highest.
     fn supported_efforts(&self, model_id: &str) -> Vec<ReasoningEffortConfig> {
         let mut efforts = self.configured_supported_efforts(model_id);
@@ -469,16 +591,17 @@ impl ChatWidget {
         let Ok(effort) = workflow_models::effort_for(model, &decision.effort) else {
             return;
         };
-        if decision.model_id == self.current_model()
+        let model_id = self.routed_id(&cfg, &decision.model_id);
+        if model_id == self.current_model()
             && self.effective_reasoning_effort().as_ref() == Some(&effort)
         {
             return;
         }
-        if self.apply_model_selection(&decision.model_id, effort).is_ok() {
+        if self.apply_model_selection(&model_id, effort).is_ok() {
             self.add_info_message(
                 format!(
                     "Auto routing: {} ({}) \u{2013} {}",
-                    decision.model_id, decision.effort, decision.reason
+                    model_id, decision.effort, decision.reason
                 ),
                 /*hint*/ None,
             );
@@ -502,6 +625,7 @@ impl ChatWidget {
         self.workflow.plan_ready = plan.approved || !plan.markdown.trim().is_empty();
         self.workflow.plan_approved = plan.approved;
         self.workflow.auto_enabled = plan.auto_enabled;
+        self.workflow.routing_variant = plan.routing_variant.clone();
         self.workflow.failed_attempts = 0;
         if plan.approved || had_routing {
             let model = plan
@@ -563,11 +687,44 @@ impl ChatWidget {
             })
             .unwrap_or_else(|| "not yet selected".to_string());
 
+        let routing_variant = self
+            .load_workflow_config()
+            .ok()
+            .flatten()
+            .map(|cfg| {
+                if workflow_models::symbolic_for_model_id(&cfg, &model_id).is_some() {
+                    cfg.variant_of(&model_id)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| cfg.default_routing_name().to_string())
+                } else {
+                    "n/a (native model)".to_string()
+                }
+            })
+            .unwrap_or_else(|| "n/a".to_string());
+
+        let provider_routing = self
+            .config
+            .model_providers
+            .get(&self.config.model_provider_id)
+            .map(|info| {
+                let session = if info.send_session_id { "on" } else { "off" };
+                let extra = info
+                    .extra_body
+                    .as_ref()
+                    .filter(|body| !body.is_empty())
+                    .and_then(|body| serde_json::to_string(body).ok())
+                    .unwrap_or_else(|| "none".to_string());
+                format!("session_id {session}; extra_body {extra}")
+            })
+            .unwrap_or_else(|| "n/a".to_string());
+
         let mut lines = vec![
             format!("Workflow: {workflow}"),
             format!("Model: {model_id}"),
             format!("Provider: {provider}"),
             format!("Reasoning effort: {effort}"),
+            format!("Routing variant: {routing_variant}"),
+            format!("Provider routing: {provider_routing}"),
             format!("Auto routing: {}", if self.workflow.auto_enabled { "on" } else { "off" }),
             format!("Plan: {plan_state}"),
             format!("Planner routing: {routing}"),
@@ -613,18 +770,16 @@ impl ChatWidget {
         if let Some(routing) = &self.workflow.routing {
             let model = workflow_models::model(cfg, &routing.model_symbolic)?;
             let effort = workflow_models::effort_for(model, &routing.effort)?;
-            return Ok((routing.model_id.clone(), effort, routing.reason.clone()));
+            let model_id = self.routed_id(cfg, &routing.model_id);
+            return Ok((model_id, effort, routing.reason.clone()));
         }
 
         let default_model = workflow_models::model(cfg, &wf.model)?;
         let default_effort = workflow_models::effort_for(default_model, cfg.effort_level(wf))?;
 
         if !self.workflow.auto_enabled {
-            return Ok((
-                default_model.id.clone(),
-                default_effort,
-                wf.description.clone(),
-            ));
+            let model_id = self.routed_id(cfg, &default_model.id);
+            return Ok((model_id, default_effort, wf.description.clone()));
         }
 
         let text = self
@@ -635,7 +790,8 @@ impl ChatWidget {
         let decision = workflow_models::classify(cfg, &text);
         let model = workflow_models::model(cfg, &decision.model_symbolic)?;
         let effort = workflow_models::effort_for(model, &decision.effort)?;
-        Ok((decision.model_id, effort, decision.reason))
+        let model_id = self.routed_id(cfg, &decision.model_id);
+        Ok((model_id, effort, decision.reason))
     }
 
     /// Build and submit the approved plan as the next user message.
@@ -855,7 +1011,13 @@ impl ChatWidget {
             return;
         };
         if let Ok(effort) = routing.reasoning() {
-            mask.model = Some(routing.model_id.clone());
+            let model_id = self
+                .load_workflow_config()
+                .ok()
+                .flatten()
+                .map(|cfg| cfg.with_variant(&routing.model_id, self.workflow.routing_variant.as_deref()))
+                .unwrap_or_else(|| routing.model_id.clone());
+            mask.model = Some(model_id);
             mask.reasoning_effort = Some(Some(effort));
         }
     }
@@ -918,6 +1080,7 @@ impl ChatWidget {
             routing: self.workflow.routing.clone(),
             approved: self.workflow.plan_approved,
             auto_enabled: self.workflow.auto_enabled,
+            routing_variant: self.workflow.routing_variant.clone(),
         };
         if let Err(err) =
             workflow_models::save_plan(&self.config.codex_home, &thread_id.to_string(), &plan)

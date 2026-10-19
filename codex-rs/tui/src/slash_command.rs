@@ -48,6 +48,7 @@ pub enum SlashCommand {
     Auto,
     Max,
     Effort,
+    Routing,
     ModelStatus,
     Voice,
     Goal,
@@ -152,6 +153,7 @@ impl SlashCommand {
             SlashCommand::Auto => "enable automatic model selection for subsequent tasks",
             SlashCommand::Max => "raise the current model to its highest reasoning effort",
             SlashCommand::Effort => "show or change the current model's reasoning effort",
+            SlashCommand::Routing => "show or change the OpenRouter routing variant (plain/nitro/floor)",
             SlashCommand::ModelStatus => {
                 "show workflow, active model, reasoning, plan and cost"
             }
@@ -200,6 +202,7 @@ impl SlashCommand {
                 | SlashCommand::Cto
                 | SlashCommand::Cfo
                 | SlashCommand::Effort
+                | SlashCommand::Routing
                 | SlashCommand::Goal
                 | SlashCommand::Voice
                 | SlashCommand::Ide
@@ -291,6 +294,7 @@ impl SlashCommand {
             | SlashCommand::Auto
             | SlashCommand::Max
             | SlashCommand::Effort
+            | SlashCommand::Routing
             | SlashCommand::Cd
             | SlashCommand::Clear
             | SlashCommand::Logout
@@ -418,6 +422,10 @@ mod tests {
         );
         assert!(SlashCommand::Effort.supports_inline_args());
         assert!(!SlashCommand::Effort.available_during_task());
+        assert_eq!(SlashCommand::Routing.command(), "routing");
+        assert_eq!(SlashCommand::from_str("routing"), Ok(SlashCommand::Routing));
+        assert!(SlashCommand::Routing.supports_inline_args());
+        assert!(!SlashCommand::Routing.available_during_task());
         assert_eq!(SlashCommand::ModelStatus.command(), "model-status");
         assert_eq!(
             SlashCommand::from_str("model-status"),

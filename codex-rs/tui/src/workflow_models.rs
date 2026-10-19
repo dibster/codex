@@ -41,7 +41,21 @@ pub(crate) struct ProviderCfg {
     pub wire_api: String,
 }
 
+/// Optional per-routing-variant price override (USD per token).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct PriceCfg {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+}
+
 /// Symbolic model definition: real provider identifier plus local metadata.
+///
+/// `id` is the *base* provider identifier without any routing-variant suffix.
+/// A routing variant (see [`WorkflowsConfig::routing_variants`]) is appended at
+/// runtime, so the same model can be switched between fast/cheap routing in the
+/// session without editing this file.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub(crate) struct ModelCfg {
     #[serde(default)]
@@ -52,6 +66,10 @@ pub(crate) struct ModelCfg {
     pub input_price_per_token: f64,
     #[serde(default)]
     pub output_price_per_token: f64,
+    /// Optional per-variant prices, keyed by routing-variant name(s). Falls back
+    /// to the base prices above when a variant is not listed.
+    #[serde(default)]
+    pub variant_prices: BTreeMap<String, PriceCfg>,
     /// Reasoning levels the provider accepts for this model, lowest to highest.
     #[serde(default)]
     pub supported_reasoning: Vec<String>,
@@ -76,6 +94,9 @@ pub(crate) struct DefaultsCfg {
     /// Reasoning level used by every workflow that omits `reasoning`.
     #[serde(default)]
     pub reasoning: Option<String>,
+    /// Default routing variant name (a key from `[routing_variants]`).
+    #[serde(default)]
+    pub routing: Option<String>,
 }
 
 /// Deterministic risk signals and per-tier assignments for `/auto`.
@@ -143,6 +164,10 @@ pub(crate) struct WorkflowsConfig {
     pub workflows: BTreeMap<String, WorkflowCfg>,
     #[serde(default)]
     pub routing: RoutingCfg,
+    /// OpenRouter-style routing variants: variant name -> model-id suffix.
+    /// `plain` maps to an empty suffix; `nitro` -> `:nitro`; `floor` -> `:floor`.
+    #[serde(default)]
+    pub routing_variants: BTreeMap<String, String>,
     #[serde(default)]
     pub defaults: DefaultsCfg,
 }
@@ -164,6 +189,90 @@ impl WorkflowsConfig {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or("high")
+    }
+
+    /// Suffix declared for a routing variant name (case-insensitive).
+    pub(crate) fn variant_suffix(&self, name: &str) -> Option<&str> {
+        self.routing_variants
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case(name.trim()))
+            .map(|(_, suffix)| suffix.as_str())
+    }
+
+    /// Default routing variant name (`[defaults].routing`, else `plain`).
+    pub(crate) fn default_routing_name(&self) -> &str {
+        self.defaults
+            .routing
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("plain")
+    }
+
+    /// Strip any declared routing-variant suffix to recover a model's base id.
+    pub(crate) fn base_id(&self, id: &str) -> String {
+        let mut longest = "";
+        for suffix in self.routing_variants.values() {
+            if !suffix.is_empty()
+                && id.ends_with(suffix.as_str())
+                && suffix.len() > longest.len()
+            {
+                longest = suffix.as_str();
+            }
+        }
+        id[..id.len() - longest.len()].to_string()
+    }
+
+    /// Apply a routing variant to a model id: base id plus the variant suffix.
+    ///
+    /// Unknown variant names fall back to the configured default; when no
+    /// `[routing_variants]` table is declared the id is returned unchanged so
+    /// configurations without variants behave exactly as before.
+    pub(crate) fn with_variant(&self, id: &str, variant: Option<&str>) -> String {
+        if self.routing_variants.is_empty() {
+            return id.to_string();
+        }
+        let base = self.base_id(id);
+        let name = variant.unwrap_or_else(|| self.default_routing_name());
+        let suffix = self.variant_suffix(name).unwrap_or("");
+        format!("{base}{suffix}")
+    }
+
+    /// Which declared variant a real model id currently uses, if identifiable.
+    /// A non-empty suffix match wins over the empty (`plain`) variant.
+    pub(crate) fn variant_of(&self, id: &str) -> Option<&str> {
+        let mut best: Option<(&str, usize)> = None;
+        for (name, suffix) in &self.routing_variants {
+            if suffix.is_empty() {
+                continue;
+            }
+            let better = match best {
+                None => true,
+                Some((_, len)) => suffix.len() > len,
+            };
+            if better && id.ends_with(suffix.as_str()) {
+                best = Some((name.as_str(), suffix.len()));
+            }
+        }
+        best.map(|(name, _)| name)
+    }
+
+    /// Sorted routing-variant names for display.
+    pub(crate) fn routing_variant_names(&self) -> Vec<&str> {
+        self.routing_variants.keys().map(String::as_str).collect()
+    }
+}
+
+impl ModelCfg {
+    /// (input, output) price per token for a routing variant, falling back to
+    /// the model's base prices when the variant has no override.
+    pub(crate) fn prices_for(&self, variant: Option<&str>) -> (f64, f64) {
+        if let Some(variant) = variant
+            && let Some(price) = self.variant_prices.get(variant)
+        {
+            return (price.input, price.output);
+        }
+        (self.input_price_per_token, self.output_price_per_token)
     }
 }
 
@@ -212,9 +321,11 @@ pub(crate) fn symbolic_for_model_id<'a>(
     cfg: &'a WorkflowsConfig,
     id: &str,
 ) -> Option<(&'a str, &'a ModelCfg)> {
+    // Compare base ids so an active routing-variant suffix still resolves.
+    let base = cfg.base_id(id);
     cfg.models
         .iter()
-        .find(|(_, model)| model.id == id)
+        .find(|(_, model)| cfg.base_id(&model.id) == base)
         .map(|(name, model)| (name.as_str(), model))
 }
 
@@ -372,6 +483,8 @@ pub(crate) struct WorkflowState {
     pub plan_approved: bool,
     /// True when `/auto` routing is enabled.
     pub auto_enabled: bool,
+    /// Active routing variant name chosen by `/routing` (session override).
+    pub routing_variant: Option<String>,
     /// Permission snapshot captured by read-only workflows.
     pub saved_permissions: Option<SavedPermissions>,
     /// Consecutive unsuccessful fix cycles, used to recommend escalation.
@@ -393,6 +506,8 @@ pub(crate) struct PersistedPlan {
     pub approved: bool,
     #[serde(default)]
     pub auto_enabled: bool,
+    #[serde(default)]
+    pub routing_variant: Option<String>,
 }
 
 /// Directory that holds persisted plan documents for a given `CODEX_HOME`.
@@ -418,6 +533,53 @@ pub(crate) fn save_plan(
     std::fs::write(&json_path, json)
         .map_err(|err| format!("failed to write {}: {err}", json_path.display()))?;
     Ok(())
+}
+
+/// Persist the default routing variant into `[defaults].routing` of the global
+/// `workflows.toml`, preserving the rest of the file byte-for-byte.
+///
+/// Only the `[defaults]` table is touched: an existing `routing` key is
+/// replaced, otherwise one is inserted at the end of that table. The file is
+/// left unchanged when `[defaults]` is absent so an unexpected layout is never
+/// rewritten.
+pub(crate) fn save_default_routing(codex_home: &Path, name: &str) -> Result<(), String> {
+    let path = config_path_in(codex_home);
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+
+    let value = format!("routing = \"{name}\"");
+    let mut lines: Vec<String> = contents.lines().map(str::to_string).collect();
+
+    let header = lines
+        .iter()
+        .position(|line| line.trim() == "[defaults]")
+        .ok_or_else(|| "no [defaults] table in workflows.toml".to_string())?;
+
+    let section_end = lines
+        .iter()
+        .enumerate()
+        .skip(header + 1)
+        .find(|(_, line)| line.trim_start().starts_with('['))
+        .map(|(idx, _)| idx)
+        .unwrap_or(lines.len());
+
+    let existing = (header + 1..section_end).find(|&idx| {
+        lines[idx]
+            .split('=')
+            .next()
+            .is_some_and(|key| key.trim() == "routing")
+    });
+
+    match existing {
+        Some(idx) => lines[idx] = value,
+        None => lines.insert(section_end, value),
+    }
+
+    let mut out = lines.join("\n");
+    if contents.ends_with('\n') {
+        out.push('\n');
+    }
+    std::fs::write(&path, out).map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
 
 /// Load a persisted plan for the given thread id, if one exists.
@@ -486,11 +648,12 @@ pub(crate) fn estimate_cost_usd(
     usage: &TokenUsage,
 ) -> Option<f64> {
     let (_, model) = symbolic_for_model_id(cfg, model_id)?;
-    if model.input_price_per_token <= 0.0 && model.output_price_per_token <= 0.0 {
+    let (input_price, output_price) = model.prices_for(cfg.variant_of(model_id));
+    if input_price <= 0.0 && output_price <= 0.0 {
         return None;
     }
-    let input = usage.input_tokens.max(0) as f64 * model.input_price_per_token;
-    let output = usage.output_tokens.max(0) as f64 * model.output_price_per_token;
+    let input = usage.input_tokens.max(0) as f64 * input_price;
+    let output = usage.output_tokens.max(0) as f64 * output_price;
     Some(input + output)
 }
 
@@ -503,12 +666,24 @@ mod tests {
 base_url = "https://openrouter.ai/api/v1"
 wire_api = "responses"
 
+[routing_variants]
+plain = ""
+nitro = ":nitro"
+floor = ":floor"
+
+[defaults]
+routing = "plain"
+
 [models.deepseek]
 id = "deepseek/deepseek-v4.1-flash"
 provider = "openrouter"
 input_price_per_token = 0.00000004
 output_price_per_token = 0.000000144
 supported_reasoning = ["none", "low", "high", "max"]
+
+[models.deepseek.variant_prices.nitro]
+input = 0.0000003
+output = 0.0000012
 
 [models.glm]
 id = "z-ai/glm-5.3"
@@ -673,6 +848,7 @@ high_signals = ["integration", "architecture", "migration"]
             ),
             approved: true,
             auto_enabled: true,
+            routing_variant: Some("nitro".to_string()),
         };
         let home = tempfile::tempdir().expect("tempdir");
         save_plan(home.path(), &thread_id, &plan).expect("plan saves");
@@ -681,6 +857,7 @@ high_signals = ["integration", "architecture", "migration"]
         assert!(loaded.approved);
         assert!(loaded.auto_enabled);
         assert_eq!(loaded.routing.unwrap().model_id, "z-ai/glm-5.3");
+        assert_eq!(loaded.routing_variant.as_deref(), Some("nitro"));
 
         assert!(plans_dir_in(home.path()).join(format!("{thread_id}.md")).exists());
         assert!(plans_dir_in(home.path()).join(format!("{thread_id}.json")).exists());
@@ -699,5 +876,76 @@ high_signals = ["integration", "architecture", "migration"]
         let cost = estimate_cost_usd(&cfg, "z-ai/glm-5.3", &usage).expect("priced model");
         assert!((cost - (0.079 + 2.5)).abs() < 1e-6);
         assert!(estimate_cost_usd(&cfg, "unknown/model", &usage).is_none());
+    }
+
+    #[test]
+    fn routing_variant_appends_and_strips_declared_suffixes() {
+        let cfg = cfg();
+        let base = "deepseek/deepseek-v4.1-flash";
+        assert_eq!(cfg.with_variant(base, Some("nitro")), format!("{base}:nitro"));
+        assert_eq!(cfg.with_variant(base, Some("plain")), base);
+        assert_eq!(cfg.with_variant(base, Some("floor")), format!("{base}:floor"));
+        // Default comes from [defaults].routing.
+        assert_eq!(cfg.with_variant(base, None), base);
+        // Round-trips: stripping a suffixed id yields the base again.
+        assert_eq!(cfg.base_id(&format!("{base}:nitro")), base);
+        assert_eq!(cfg.base_id(base), base);
+    }
+
+    #[test]
+    fn routing_variant_identifies_active_suffix() {
+        let cfg = cfg();
+        let base = "z-ai/glm-5.3";
+        assert_eq!(cfg.variant_of(&format!("{base}:nitro")), Some("nitro"));
+        // A base id carries no suffix, so callers fall back to the default.
+        assert_eq!(cfg.variant_of(base), None);
+        assert_eq!(cfg.variant_of("openai/gpt-5"), None);
+    }
+
+    #[test]
+    fn variant_cost_uses_override_when_present() {
+        let cfg = cfg();
+        let usage = TokenUsage {
+            input_tokens: 1_000_000,
+            cached_input_tokens: 0,
+            output_tokens: 1_000_000,
+            reasoning_output_tokens: 0,
+            total_tokens: 2_000_000,
+        };
+        let base = estimate_cost_usd(&cfg, "deepseek/deepseek-v4.1-flash", &usage).unwrap();
+        assert!((base - (0.04 + 0.144)).abs() < 1e-6);
+        let nitro =
+            estimate_cost_usd(&cfg, "deepseek/deepseek-v4.1-flash:nitro", &usage).unwrap();
+        assert!((nitro - (0.3 + 1.2)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn save_default_routing_replaces_key_preserving_file() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let path = config_path_in(home.path());
+        std::fs::write(
+            &path,
+            "[defaults]\nreasoning = \"high\"\n\n[workflows.plan]\nmodel = \"deepseek\"\n",
+        )
+        .unwrap();
+        save_default_routing(home.path(), "plain").expect("insert works");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("routing = \"plain\""));
+        assert!(text.contains("reasoning = \"high\""));
+        assert!(text.contains("[workflows.plan]"));
+
+        // Replacing an existing key must not duplicate it.
+        save_default_routing(home.path(), "nitro").expect("replace works");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("routing =").count(), 1);
+        assert!(text.contains("routing = \"nitro\""));
+    }
+
+    #[test]
+    fn symbolic_lookup_resolves_variant_suffixed_ids() {
+        let cfg = cfg();
+        let (symbolic, _) =
+            symbolic_for_model_id(&cfg, "z-ai/glm-5.3:floor").expect("base id resolves");
+        assert_eq!(symbolic, "glm");
     }
 }
