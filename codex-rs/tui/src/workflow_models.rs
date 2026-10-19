@@ -68,13 +68,65 @@ pub(crate) struct WorkflowCfg {
     pub description: String,
 }
 
-/// Deterministic risk signals for `/auto`.
+/// Global fallbacks applied when a workflow omits a value.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub(crate) struct DefaultsCfg {
+    /// Reasoning level used by every workflow that omits `reasoning`.
+    #[serde(default)]
+    pub reasoning: Option<String>,
+}
+
+/// Deterministic risk signals and per-tier assignments for `/auto`.
+///
+/// Each tier maps a matched signal group to a symbolic model and reasoning
+/// level. The model/reasoning fields are optional so the built-in defaults
+/// apply when a config omits them, and every level is validated against the
+/// model's `supported_reasoning` before it is applied.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub(crate) struct RoutingCfg {
     #[serde(default)]
     pub max_signals: Vec<String>,
     #[serde(default)]
     pub high_signals: Vec<String>,
+    #[serde(default)]
+    pub max_model: Option<String>,
+    #[serde(default)]
+    pub max_reasoning: Option<String>,
+    #[serde(default)]
+    pub high_model: Option<String>,
+    #[serde(default)]
+    pub high_reasoning: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub default_reasoning: Option<String>,
+}
+
+impl RoutingCfg {
+    /// Symbolic model for the hardware/unknown-cause tier.
+    fn max_model_name(&self) -> &str {
+        self.max_model.as_deref().unwrap_or("glm")
+    }
+    /// Reasoning level for the hardware/unknown-cause tier.
+    fn max_reasoning_level(&self) -> &str {
+        self.max_reasoning.as_deref().unwrap_or("max")
+    }
+    /// Symbolic model for the architecture/integration tier.
+    fn high_model_name(&self) -> &str {
+        self.high_model.as_deref().unwrap_or("glm")
+    }
+    /// Reasoning level for the architecture/integration tier.
+    fn high_reasoning_level(&self) -> &str {
+        self.high_reasoning.as_deref().unwrap_or("high")
+    }
+    /// Symbolic model when no risk signal matches.
+    fn default_model_name(&self) -> &str {
+        self.default_model.as_deref().unwrap_or("deepseek")
+    }
+    /// Reasoning level when no risk signal matches.
+    fn default_reasoning_level(&self) -> &str {
+        self.default_reasoning.as_deref().unwrap_or("high")
+    }
 }
 
 /// The whole `workflows.toml` document.
@@ -89,11 +141,28 @@ pub(crate) struct WorkflowsConfig {
     pub workflows: BTreeMap<String, WorkflowCfg>,
     #[serde(default)]
     pub routing: RoutingCfg,
+    #[serde(default)]
+    pub defaults: DefaultsCfg,
 }
 
 /// Path of the central workflow configuration file.
 pub(crate) fn config_path_in(codex_home: &Path) -> PathBuf {
     codex_home.join(WORKFLOWS_FILE_NAME)
+}
+
+impl WorkflowsConfig {
+    /// Reasoning level for a workflow: its own `reasoning`, else
+    /// `[defaults].reasoning`, else the built-in `high`.
+    pub(crate) fn effort_level<'a>(&'a self, wf: &'a WorkflowCfg) -> &'a str {
+        if !wf.reasoning.trim().is_empty() {
+            return &wf.reasoning;
+        }
+        self.defaults
+            .reasoning
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("high")
+    }
 }
 
 /// Parse `workflows.toml` from an explicit `CODEX_HOME`.
@@ -230,22 +299,22 @@ pub(crate) fn classify(cfg: &WorkflowsConfig, text: &str) -> RoutingDecision {
 
     let (symbolic, effort, complexity, reason) = if !max_hits.is_empty() {
         (
-            "glm",
-            "max",
+            cfg.routing.max_model_name(),
+            cfg.routing.max_reasoning_level(),
             "difficult",
             format!("hardware/unknown-cause signals: {}", max_hits.join(", ")),
         )
     } else if !high_hits.is_empty() {
         (
-            "glm",
-            "high",
+            cfg.routing.high_model_name(),
+            cfg.routing.high_reasoning_level(),
             "complex",
             format!("architecture/integration signals: {}", high_hits.join(", ")),
         )
     } else {
         (
-            "deepseek",
-            "high",
+            cfg.routing.default_model_name(),
+            cfg.routing.default_reasoning_level(),
             "routine",
             "no elevated risk signals detected".to_string(),
         )
@@ -461,6 +530,55 @@ high_signals = ["integration", "architecture", "migration"]
 
     fn cfg() -> WorkflowsConfig {
         toml::from_str(FIXTURE).expect("fixture parses")
+    }
+
+    #[test]
+    fn workflow_effort_falls_back_to_global_default() {
+        let mut cfg = cfg();
+        let plan = workflow(&cfg, "plan").unwrap().clone();
+        let explicit = plan.reasoning.clone();
+        assert!(!explicit.is_empty());
+        // The fixture sets an explicit level, which always wins.
+        assert_eq!(cfg.effort_level(&plan), explicit);
+
+        let mut without = plan.clone();
+        without.reasoning = String::new();
+        // No workflow value and no global default -> built-in fallback.
+        assert_eq!(cfg.effort_level(&without), "high");
+
+        cfg.defaults.reasoning = Some("low".into());
+        assert_eq!(cfg.effort_level(&without), "low");
+        assert_eq!(cfg.effort_level(&plan), explicit);
+    }
+
+    #[test]
+    fn classify_honours_configured_tier_model_and_reasoning() {
+        let mut cfg = cfg();
+        cfg.routing.high_model = Some("glm".into());
+        cfg.routing.high_reasoning = Some("low".into());
+        cfg.routing.default_model = Some("deepseek".into());
+        cfg.routing.default_reasoning = Some("low".into());
+        cfg.routing.max_model = Some("glm".into());
+        cfg.routing.max_reasoning = Some("low".into());
+
+        let routine = classify(&cfg, "add a simple endpoint");
+        assert_eq!(routine.model_symbolic, "deepseek");
+        assert_eq!(routine.effort, "low");
+
+        let complex = classify(&cfg, "service integration refactor");
+        assert_eq!(complex.model_symbolic, "glm");
+        assert_eq!(complex.effort, "low");
+        // Every configured level must survive validation for its model.
+        let model = model(&cfg, &complex.model_symbolic).unwrap();
+        assert!(effort_for(model, &complex.effort).is_ok());
+
+        let difficult = classify(&cfg, "usb barcode scanner intermittent");
+        assert_eq!(difficult.model_symbolic, "glm");
+        assert_eq!(difficult.effort, "low");
+
+        // An unset tier keeps the built-in default.
+        cfg.routing.default_reasoning = None;
+        assert_eq!(classify(&cfg, "add a simple endpoint").effort, "high");
     }
 
     #[test]

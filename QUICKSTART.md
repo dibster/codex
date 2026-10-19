@@ -61,6 +61,12 @@ see a "Recovered plan… Run /code to implement it" notice.
 `~/.codex/workflows.toml` holds all model / reasoning / mode mapping. Change
 assignments there — no Rust rebuild needed.
 
+Reasoning effort is configurable everywhere. A workflow's own `reasoning` wins,
+otherwise `[defaults].reasoning` applies, otherwise the built-in `high`. The `/auto`
+tiers are configurable per tier under `[routing]` (`max_reasoning`, `high_reasoning`,
+`default_reasoning`, plus a `_model` for each); they ship at `low`. Unsupported levels
+for a model are rejected, never silently downgraded.
+
 ## Notes / limitations
 
 - `/debug` is not listed in the `/` popup (upstream `debug-config` namespace), but it

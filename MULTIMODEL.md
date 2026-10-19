@@ -65,7 +65,22 @@ Two files, both global (`$CODEX_HOME`, default `~/.codex`):
   OpenRouter provider block and model entries).
 * `~/.codex/workflows.toml` - **the** central mapping: symbolic model names -> real provider
   IDs, per-model prices and supported reasoning levels, each workflow's model/reasoning/mode,
-  and the `/auto` risk signals. Edit this to change assignments; no recompile needed.
+  the `/auto` risk signals, and the global `[defaults]`. Edit this to change assignments;
+  no recompile needed.
+
+Every reasoning level is configurable, with a documented fallback chain:
+
+* `[workflows.<name>].reasoning` - this workflow's level (highest priority).
+* `[defaults].reasoning` - global fallback for workflows that omit `reasoning`.
+* built-in `"high"` - used when both are absent.
+
+`/auto` routing tiers are configurable too. `[routing]` holds the signal lists plus an
+optional model and reasoning per tier - `max_model`/`max_reasoning`,
+`high_model`/`high_reasoning`, `default_model`/`default_reasoning`. Each tier defaults to
+its built-in (`glm`/`max`, `glm`/`high`, `deepseek`/`high`) when omitted, and the level is
+validated against the model's `supported_reasoning` before it is applied. The shipped config
+runs all three `/auto` tiers at `low` effort; raise a tier here (e.g. `max_reasoning = "max"`)
+to change it without rebuilding.
 
 Model identifiers are resolved in one place (`workflow_models.rs`) and never hard-coded across
 modules.
@@ -130,7 +145,7 @@ the routing/auto-routing transcript notices, and the wire request body.
 | D Manual override | `/debug` | GLM-5.3 `max`, no restart, context preserved |
 | E Review | `/review` | GLM-5.3 `high`, read-only; native review popup also opens (Esc closes it) |
 | F CTO/CFO/Code | `/cto`, `/cfo`, `/complex` | DeepSeek `high`, DeepSeek `high`, GLM `high` respectively, same process |
-| F Auto routing | `/auto` then a plain low-risk and high-risk prompt | low-risk -> `Auto routing: deepseek/deepseek-v4.1-flash (high)`; high-risk -> `Auto routing: z-ai/glm-5.3 (max) - hardware/... signals: usb, barcode, scanner, android, intermittent` |
+| F Auto routing | `/auto` then a plain low-risk and high-risk prompt | low-risk -> `Auto routing: deepseek/deepseek-v4.1-flash (low)`; high-risk -> `Auto routing: z-ai/glm-5.3 (low) - hardware/... signals: usb, barcode, scanner, android, intermittent` (levels come from `[routing]`; shipped tiers are `low`) |
 | G Recovery | `/plan ...`, approve, kill the TUI, `codex resume <id>` | plan + approval restored (`/model-status` -> `approved`), selected model restored, and the notice `Recovered plan for workflow 'plan' (<model>). Run /code to implement it.` is emitted |
 | H Compatibility | native `/model`, `/review`, MCP, auth, streaming, shell + patch tools | all work; catalog lists both workflow models; real tool calls verified on both models |
 

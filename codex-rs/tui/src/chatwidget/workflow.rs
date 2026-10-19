@@ -113,9 +113,9 @@ impl ChatWidget {
                     );
                     return;
                 };
-                let Ok(effort) = workflow_models::effort_for(&model, &wf.reasoning) else {
+                let Ok(effort) = workflow_models::effort_for(&model, cfg.effort_level(&wf)) else {
                     self.add_error_message(
-                        workflow_models::effort_for(&model, &wf.reasoning)
+                        workflow_models::effort_for(&model, cfg.effort_level(&wf))
                             .err()
                             .unwrap_or_default(),
                     );
@@ -158,7 +158,10 @@ impl ChatWidget {
         match message {
             Some(message) => {
                 self.add_info_message(
-                    format!("Implementing with {model_id} ({} reasoning).", wf.reasoning),
+                    format!(
+                        "Implementing with {model_id} ({} reasoning).",
+                        cfg.effort_level(&wf)
+                    ),
                     /*hint*/ None,
                 );
                 self.workflow.suppress_auto_routing = true;
@@ -173,7 +176,7 @@ impl ChatWidget {
                 self.add_info_message(
                     format!(
                         "Workflow '/{name}' active: {model_id} with {} reasoning. {reason}",
-                        wf.reasoning
+                        cfg.effort_level(&wf)
                     ),
                     hint,
                 );
@@ -212,9 +215,9 @@ impl ChatWidget {
             );
             return false;
         };
-        let Ok(effort) = workflow_models::effort_for(&model, &wf.reasoning) else {
+        let Ok(effort) = workflow_models::effort_for(&model, cfg.effort_level(&wf)) else {
             self.add_error_message(
-                workflow_models::effort_for(&model, &wf.reasoning)
+                workflow_models::effort_for(&model, cfg.effort_level(&wf))
                     .err()
                     .unwrap_or_default(),
             );
@@ -240,7 +243,7 @@ impl ChatWidget {
         self.add_info_message(
             format!(
                 "Planning with {} ({} reasoning, read-only). The planner selects the coding model for /code.",
-                model.id, wf.reasoning
+                model.id, cfg.effort_level(&wf)
             ),
             /*hint*/ None,
         );
@@ -263,7 +266,7 @@ impl ChatWidget {
         let Ok(model) = workflow_models::model(&cfg, &wf.model).cloned() else {
             return;
         };
-        let Ok(effort) = workflow_models::effort_for(&model, &wf.reasoning) else {
+        let Ok(effort) = workflow_models::effort_for(&model, cfg.effort_level(&wf)) else {
             return;
         };
         self.workflow.workflow = Some("review".to_string());
@@ -488,7 +491,7 @@ impl ChatWidget {
         }
 
         let default_model = workflow_models::model(cfg, &wf.model)?;
-        let default_effort = workflow_models::effort_for(default_model, &wf.reasoning)?;
+        let default_effort = workflow_models::effort_for(default_model, cfg.effort_level(wf))?;
 
         if !self.workflow.auto_enabled {
             return Ok((
