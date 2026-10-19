@@ -359,6 +359,8 @@ async fn responses_client_stream_request_preserves_item_ids() -> Result<()> {
         text: None,
         client_metadata: None,
         access_programs: None,
+        session_id: None,
+        extra_body: Default::default(),
     };
     let expected = serde_json::to_value(&request)?;
 
@@ -413,6 +415,8 @@ async fn responses_client_stream_request_sends_routing_fields_ahead_of_large_inp
         text: None,
         client_metadata: None,
         access_programs: None,
+        session_id: None,
+        extra_body: Default::default(),
     };
     let expected = serde_json::to_value(&request)?;
 
@@ -503,6 +507,8 @@ async fn streaming_client_retries_on_transport_error() -> Result<()> {
         text: None,
         client_metadata: None,
         access_programs: None,
+        session_id: None,
+        extra_body: Default::default(),
     };
     let client = ResponsesClient::new(transport.clone(), provider, Arc::new(NoAuth));
 
@@ -623,6 +629,8 @@ async fn azure_store_sends_ids_and_headers() -> Result<()> {
         text: None,
         client_metadata: None,
         access_programs: None,
+        session_id: None,
+        extra_body: Default::default(),
     };
 
     let mut extra_headers = HeaderMap::new();

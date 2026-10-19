@@ -645,6 +645,8 @@ mod tests {
             aws: None,
             wire_api: WireApi::Responses,
             query_params: None,
+            send_session_id: false,
+            extra_body: None,
             http_headers: None,
             env_http_headers: None,
             request_max_retries: Some(0),

@@ -60,6 +60,8 @@ async fn retries_on_early_close() {
         aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
+        send_session_id: false,
+        extra_body: None,
         http_headers: None,
         env_http_headers: None,
         // exercise retry path: first attempt yields incomplete stream, so allow 1 retry

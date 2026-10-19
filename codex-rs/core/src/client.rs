@@ -357,6 +357,8 @@ fn responses_request_properties_match(
         prompt_cache_key: previous_prompt_cache_key,
         text: previous_text,
         client_metadata: _,
+        session_id: previous_session_id,
+        extra_body: previous_extra_body,
         access_programs: _,
     } = previous;
     let ResponsesApiRequest {
@@ -374,6 +376,8 @@ fn responses_request_properties_match(
         prompt_cache_key: current_prompt_cache_key,
         text: current_text,
         client_metadata: _,
+        session_id: current_session_id,
+        extra_body: current_extra_body,
         access_programs: _,
     } = current;
 
@@ -390,6 +394,10 @@ fn responses_request_properties_match(
         && previous_service_tier == current_service_tier
         && previous_prompt_cache_key == current_prompt_cache_key
         && previous_text == current_text
+        // Session id / extra body changes alter routing, so a warm connection
+        // must be reopened rather than reused.
+        && previous_session_id == current_session_id
+        && previous_extra_body == current_extra_body
 }
 
 fn response_items_equal_ignoring_internal_metadata(
@@ -1008,6 +1016,21 @@ impl ModelClient {
             prompt_cache_key,
             text,
             client_metadata: Some(client_metadata),
+            session_id: self
+                .state
+                .provider
+                .info()
+                .send_session_id
+                .then(|| self.responses_session_id(responses_metadata)),
+            extra_body: self
+                .state
+                .provider
+                .info()
+                .extra_body
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
             access_programs: None,
         };
         Ok(request)

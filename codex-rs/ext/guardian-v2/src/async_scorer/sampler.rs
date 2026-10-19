@@ -243,6 +243,8 @@ impl LunaSampler {
             text: None,
             client_metadata: None,
             access_programs: None,
+            session_id: None,
+            extra_body: Default::default(),
         };
         execution::SamplingExecution {
             auth_owner_generation,

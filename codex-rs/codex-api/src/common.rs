@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use serde_json::value::RawValue;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -299,6 +300,15 @@ pub struct ResponsesApiRequest {
     pub text: Option<TextControls>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_metadata: Option<HashMap<String, String>>,
+    /// Optional sticky-routing key surfaced to gateways that support it
+    /// (e.g. OpenRouter's `session_id`). Omitted from the body when unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Extra top-level JSON fields merged into the request body for this
+    /// provider (e.g. OpenRouter `provider` routing preferences). Empty by
+    /// default so it serializes to nothing.
+    #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra_body: BTreeMap<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_programs: Option<AccessPrograms>,
 }
@@ -322,6 +332,8 @@ impl<'a> From<&'a ResponsesApiRequest> for ResponseCreateWsRequest<'a> {
             text: request.text.as_ref(),
             generate: None,
             client_metadata: request.client_metadata.clone(),
+            session_id: request.session_id.as_deref(),
+            extra_body: &request.extra_body,
             access_programs: request.access_programs,
         }
     }
@@ -355,6 +367,10 @@ pub struct ResponseCreateWsRequest<'a> {
     pub generate: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_metadata: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<&'a str>,
+    #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra_body: &'a BTreeMap<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_programs: Option<AccessPrograms>,
 }
@@ -422,5 +438,81 @@ impl Stream for ResponseStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.rx_event.poll_recv(cx)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_request() -> ResponsesApiRequest {
+        ResponsesApiRequest {
+            model: "test-model".to_string(),
+            stream: true,
+            service_tier: None,
+            input: Vec::new(),
+            tools: None,
+            tool_choice: "auto".to_string(),
+            parallel_tool_calls: true,
+            reasoning: None,
+            store: false,
+            stream_options: None,
+            include: Vec::new(),
+            prompt_cache_key: None,
+            text: None,
+            client_metadata: None,
+            session_id: None,
+            extra_body: BTreeMap::new(),
+            access_programs: None,
+        }
+    }
+
+    #[test]
+    fn session_id_and_extra_body_serialize_at_top_level() {
+        let mut request = base_request();
+        request.session_id = Some("thread-123".to_string());
+        request.extra_body.insert(
+            "provider".to_string(),
+            serde_json::json!({
+                "allow_fallbacks": true,
+                "order": ["DeepInfra/turbo"],
+            }),
+        );
+
+        let value = serde_json::to_value(&request).expect("serialize request");
+        assert_eq!(value["session_id"], serde_json::json!("thread-123"));
+        assert_eq!(
+            value["provider"]["allow_fallbacks"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["provider"]["order"][0],
+            serde_json::json!("DeepInfra/turbo")
+        );
+    }
+
+    #[test]
+    fn empty_session_id_and_extra_body_are_omitted() {
+        let value = serde_json::to_value(base_request()).expect("serialize request");
+        assert!(value.get("session_id").is_none());
+        assert!(value.get("provider").is_none());
+    }
+
+    #[test]
+    fn websocket_request_carries_session_id_and_extra_body() {
+        let mut request = base_request();
+        request.session_id = Some("thread-123".to_string());
+        request.extra_body.insert(
+            "provider".to_string(),
+            serde_json::json!({ "allow_fallbacks": false }),
+        );
+
+        let ws_request = ResponseCreateWsRequest::from(&request);
+        let value = serde_json::to_value(&ws_request).expect("serialize ws request");
+        assert_eq!(value["session_id"], serde_json::json!("thread-123"));
+        assert_eq!(
+            value["provider"]["allow_fallbacks"],
+            serde_json::json!(false)
+        );
     }
 }

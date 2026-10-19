@@ -169,6 +169,26 @@ pub struct ModelProviderInfo {
     pub capabilities: Option<ModelProviderCapabilities>,
     /// Optional query parameters to append to the base URL.
     pub query_params: Option<HashMap<String, RedactedString>>,
+    /// When true, include the session id in the Responses request body as
+    /// `session_id`. OpenRouter uses that field as its sticky-routing key, so a
+    /// conversation keeps hitting the same upstream provider (and its warm
+    /// prompt cache) even before the first cache hit is observed. Off by
+    /// default because strict providers reject unknown body fields.
+    #[serde(default)]
+    pub send_session_id: bool,
+    /// Extra top-level JSON fields merged into every Responses request body for
+    /// this provider. Used for gateway options Codex does not model directly,
+    /// e.g. OpenRouter's provider-routing preferences:
+    ///
+    /// ```toml
+    /// [model_providers.openrouter.extra_body]
+    /// provider = { order = ["DeepInfra/turbo"], allow_fallbacks = false }
+    /// ```
+    ///
+    /// Only set keys the provider accepts; strict providers reject unknown
+    /// fields.
+    #[serde(default)]
+    pub extra_body: Option<serde_json::Map<String, serde_json::Value>>,
     /// Additional HTTP headers to include in requests to this provider where
     /// the (key, value) pairs are the header name and value.
     pub http_headers: Option<HashMap<String, RedactedString>>,
@@ -536,6 +556,8 @@ other non-default provider fields are not supported"
             aws: None,
             wire_api: WireApi::Responses,
             query_params: None,
+            send_session_id: false,
+            extra_body: None,
             http_headers: Some(
                 [("version".to_string(), env!("CARGO_PKG_VERSION").into())]
                     .into_iter()
@@ -588,6 +610,8 @@ other non-default provider fields are not supported"
             })),
             wire_api: WireApi::Responses,
             query_params: None,
+            send_session_id: false,
+            extra_body: None,
             http_headers: Some(HashMap::from([(
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string(),
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE.into(),
@@ -765,6 +789,8 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         aws: None,
         wire_api,
         query_params: None,
+        send_session_id: false,
+        extra_body: None,
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,

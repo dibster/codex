@@ -87,6 +87,8 @@ base_url = "http://localhost:11434/v1"
         aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
+        send_session_id: false,
+        extra_body: None,
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,
@@ -126,6 +128,8 @@ query_params = { api-version = "2025-04-01-preview" }
         query_params: Some(maplit::hashmap! {
             "api-version".to_string() => "2025-04-01-preview".into(),
         }),
+        send_session_id: false,
+        extra_body: None,
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,
@@ -165,6 +169,8 @@ supports_standalone_web_search = true
         aws: None,
         wire_api: WireApi::Responses,
         query_params: None,
+        send_session_id: false,
+        extra_body: None,
         http_headers: Some(maplit::hashmap! {
             "X-Example-Header".to_string() => "example-value".into(),
         }),
@@ -356,6 +362,8 @@ fn test_create_amazon_bedrock_provider() {
             }),
             wire_api: WireApi::Responses,
             query_params: None,
+            send_session_id: false,
+            extra_body: None,
             http_headers: Some(maplit::hashmap! {
                 AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_HEADER.to_string() =>
                     AMAZON_BEDROCK_MANTLE_CLIENT_AGENT_VALUE.into(),
@@ -881,4 +889,40 @@ model_catalog_url = "https://gateway.example/codex/catalog?token=catalog-secret"
             .base_url,
         "https://gateway.example/v1"
     );
+}
+
+#[test]
+fn test_deserialize_session_id_and_extra_body_provider_routing() {
+    let provider_toml = r#"
+name = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+wire_api = "responses"
+send_session_id = true
+
+[extra_body.provider]
+allow_fallbacks = true
+order = ["DeepInfra/turbo"]
+"#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert!(provider.send_session_id);
+
+    let extra_body = provider.extra_body.clone().expect("extra_body parsed");
+    assert_eq!(
+        extra_body.get("provider"),
+        Some(&serde_json::json!({
+            "allow_fallbacks": true,
+            "order": ["DeepInfra/turbo"],
+        })),
+    );
+
+    // Round-trips back to the same TOML keys.
+    let reserialized = toml::to_string(&provider).unwrap();
+    assert!(reserialized.contains("send_session_id = true"));
+    assert!(reserialized.contains("allow_fallbacks = true"));
+
+    // Defaults stay off so strict providers are unaffected.
+    let default = ModelProviderInfo::default();
+    assert!(!default.send_session_id);
+    assert_eq!(default.extra_body, None);
 }

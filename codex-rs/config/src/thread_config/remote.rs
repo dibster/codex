@@ -185,6 +185,8 @@ fn model_provider_from_proto(
         aws: None,
         wire_api,
         query_params: provider.query_params.map(redacted_string_map),
+        send_session_id: false,
+        extra_body: None,
         http_headers: provider.http_headers.map(redacted_string_map),
         env_http_headers: provider.env_http_headers.map(|map| map.values),
         request_max_retries: provider.request_max_retries,
@@ -217,6 +219,10 @@ fn model_provider_to_proto(
         aws: _,
         wire_api,
         query_params,
+        // send_session_id / extra_body are local-only provider options and are not
+        // part of the remote thread-config wire format, so they are dropped here.
+        send_session_id: _,
+        extra_body: _,
         http_headers,
         env_http_headers,
         request_max_retries,
@@ -569,6 +575,8 @@ mod tests {
                 "api-version".to_string(),
                 "2026-04-16".into(),
             )])),
+            send_session_id: false,
+            extra_body: None,
             http_headers: Some(HashMap::from([("X-Test".to_string(), "enabled".into())])),
             env_http_headers: Some(HashMap::from([(
                 "X-Env".to_string(),
